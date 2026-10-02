@@ -1,45 +1,466 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Survival Prototype</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Survival</title>
 <style>
-  body { margin: 0; background: #1a1a1a; color: #eee; font-family: sans-serif; }
-  #hud { position: fixed; top: 10px; left: 10px; font-size: 16px; z-index: 10; }
-  canvas { display: block; margin: 0 auto; background: #2a3a2a; max-width: 100%; }
+  :root { color-scheme: dark; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: radial-gradient(circle at 50% 25%, #1b2a1b 0%, #0d130d 65%, #050805 100%);
+    color: #eef3ea;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; align-items: center; justify-content: center;
+    min-height: 100vh; overflow: hidden;
+  }
+  canvas {
+    display: block;
+    border-radius: 10px;
+    box-shadow: 0 24px 70px rgba(0,0,0,.65), 0 0 0 1px rgba(255,255,255,.06);
+    background: #2a3a2a;
+    max-width: 100vw;
+    max-height: 100vh;
+  }
+  #hud { position: fixed; top: 14px; left: 14px; z-index: 10; display: grid; gap: 8px; }
+  .panel {
+    background: rgba(10,16,10,.55);
+    -webkit-backdrop-filter: blur(7px);
+    backdrop-filter: blur(7px);
+    border: 1px solid rgba(255,255,255,.09);
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-size: 14px;
+    line-height: 1.55;
+    box-shadow: 0 8px 24px rgba(0,0,0,.4);
+    min-width: 190px;
+  }
+  .panel .big { font-size: 20px; font-weight: 700; }
+  .panel b { color: #ffd479; }
+  .row { display: flex; justify-content: space-between; gap: 16px; }
+  .muted { opacity: .6; font-size: 12px; }
+  kbd {
+    background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.18);
+    border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; font-size: 11px;
+    font-family: inherit;
+  }
 </style>
 </head>
 <body>
-<div id="hud">Connecting...</div>
+<div id="hud">
+  <div class="panel" id="stats">Connecting…</div>
+  <div class="panel muted">
+    <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move &nbsp;·&nbsp; click a tree to chop</div>
+  </div>
+</div>
 <canvas id="game" width="1000" height="700"></canvas>
 
 <script src="https://unpkg.com/colyseus.js@0.15.17/dist/colyseus.js"></script>
 <script>
+"use strict";
+
 const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
-const hud = document.getElementById("hud");
+const statsEl = document.getElementById("stats");
 
-// Build WS URL from the page's own origin — works on localhost AND Render
-const proto = location.protocol === "https:" ? "wss" : "ws";
-const endpoint = `${proto}://${location.host}`;
+const W = canvas.width;
+const H = canvas.height;
 
-const client = new Colyseus.Client(endpoint);
-let room;
-let myId = null;
+// ---------------------------------------------------------------- utilities
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function hashStr(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 
+// ---------------------------------------------------------- static terrain
+const terrain = document.createElement("canvas");
+terrain.width = W; terrain.height = H;
+(function buildTerrain() {
+  const g = terrain.getContext("2d");
+  const rnd = mulberry32(1337);
+
+  const base = g.createLinearGradient(0, 0, 0, H);
+  base.addColorStop(0, "#4f7a3a");
+  base.addColorStop(0.5, "#456d33");
+  base.addColorStop(1, "#3a5c2b");
+  g.fillStyle = base;
+  g.fillRect(0, 0, W, H);
+
+  // Soft mottled patches of varying grass tones
+  for (let i = 0; i < 260; i++) {
+    const x = rnd() * W, y = rnd() * H;
+    const r = 30 + rnd() * 110;
+    const shade = rnd();
+    const col = shade < 0.4 ? "63,102,45" : shade < 0.75 ? "84,124,58" : "52,84,40";
+    const grad = g.createRadialGradient(x, y, 0, x, y, r);
+    grad.addColorStop(0, `rgba(${col},${0.18 + rnd() * 0.16})`);
+    grad.addColorStop(1, `rgba(${col},0)`);
+    g.fillStyle = grad;
+    g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
+  }
+
+  // Dirt clearings
+  for (let i = 0; i < 7; i++) {
+    const x = rnd() * W, y = rnd() * H, r = 40 + rnd() * 70;
+    const grad = g.createRadialGradient(x, y, 0, x, y, r);
+    grad.addColorStop(0, "rgba(96,72,44,0.55)");
+    grad.addColorStop(0.7, "rgba(96,72,44,0.25)");
+    grad.addColorStop(1, "rgba(96,72,44,0)");
+    g.fillStyle = grad;
+    g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
+  }
+
+  // Scattered rocks
+  for (let i = 0; i < 40; i++) {
+    const x = rnd() * W, y = rnd() * H, r = 3 + rnd() * 6;
+    g.fillStyle = "rgba(0,0,0,0.22)";
+    g.beginPath(); g.ellipse(x + 1.5, y + 2, r, r * 0.6, 0, 0, Math.PI * 2); g.fill();
+    g.fillStyle = "#8a8f86";
+    g.beginPath(); g.ellipse(x, y, r, r * 0.7, rnd(), 0, Math.PI * 2); g.fill();
+    g.fillStyle = "rgba(255,255,255,0.25)";
+    g.beginPath(); g.ellipse(x - r * 0.3, y - r * 0.3, r * 0.4, r * 0.25, 0, 0, Math.PI * 2); g.fill();
+  }
+
+  // Grass tufts
+  for (let i = 0; i < 1400; i++) {
+    const x = rnd() * W, y = rnd() * H;
+    const h = 4 + rnd() * 7;
+    const lean = (rnd() - 0.5) * 4;
+    g.strokeStyle = rnd() < 0.5 ? "rgba(120,170,80,0.5)" : "rgba(70,110,50,0.55)";
+    g.lineWidth = 1;
+    g.beginPath();
+    g.moveTo(x, y);
+    g.quadraticCurveTo(x + lean * 0.5, y - h * 0.6, x + lean, y - h);
+    g.stroke();
+  }
+
+  // Wildflowers
+  for (let i = 0; i < 120; i++) {
+    const x = rnd() * W, y = rnd() * H;
+    const c = ["#e8d15a", "#e88fb0", "#dfe6ea", "#c98fe8"][(rnd() * 4) | 0];
+    g.fillStyle = c;
+    g.beginPath(); g.arc(x, y, 1.6, 0, Math.PI * 2); g.fill();
+  }
+})();
+
+// --------------------------------------------------------------- tree data
+const treeCache = new Map();
+function treeDetail(id) {
+  let d = treeCache.get(id);
+  if (d) return d;
+  const rnd = mulberry32(hashStr(id));
+  const pine = rnd() < 0.45;
+  d = {
+    pine,
+    lean: (rnd() - 0.5) * 5,
+    height: 34 + rnd() * 16,
+    trunkW: 5 + rnd() * 3,
+    swayPhase: rnd() * Math.PI * 2,
+    swaySpeed: 0.6 + rnd() * 0.5,
+    swayAmp: 1.2 + rnd() * 1.8,
+    blobs: [],
+    shades: [],
+  };
+  const n = pine ? 4 : 6;
+  for (let i = 0; i < n; i++) {
+    d.blobs.push({
+      dx: (rnd() - 0.5) * (pine ? 14 : 30),
+      dy: (rnd() - 0.5) * (pine ? 10 : 22) - (pine ? 0 : 6),
+      r: (pine ? 12 : 13) + rnd() * (pine ? 6 : 9),
+    });
+    const hue = 95 + rnd() * 35;
+    const light = 22 + rnd() * 20;
+    d.shades.push(`hsl(${hue}, ${40 + rnd() * 18}%, ${light}%)`);
+  }
+  treeCache.set(id, d);
+  return d;
+}
+
+function drawTree(t, time) {
+  const d = treeDetail(t.id);
+  const sway = Math.sin(time * d.swaySpeed + d.swayPhase) * d.swayAmp;
+  const baseX = t.x, baseY = t.y;
+  const topX = baseX + d.lean + sway;
+  const topY = baseY - d.height;
+
+  // Ground shadow
+  ctx.save();
+  ctx.globalAlpha = 0.3;
+  ctx.fillStyle = "#000";
+  ctx.beginPath();
+  ctx.ellipse(baseX + 8, baseY + 6, 20, 10, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  // Trunk
+  ctx.strokeStyle = "#5b3d22";
+  ctx.lineWidth = d.trunkW;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(baseX, baseY);
+  ctx.quadraticCurveTo(baseX + d.lean * 0.4, baseY - d.height * 0.55, topX, topY + 8);
+  ctx.stroke();
+  ctx.strokeStyle = "rgba(255,220,170,0.15)";
+  ctx.lineWidth = Math.max(1, d.trunkW * 0.35);
+  ctx.beginPath();
+  ctx.moveTo(baseX - 1, baseY - 2);
+  ctx.quadraticCurveTo(baseX + d.lean * 0.4 - 1, baseY - d.height * 0.55, topX - 1, topY + 8);
+  ctx.stroke();
+
+  if (d.pine) {
+    // Stacked conifer tiers
+    for (let i = 0; i < 4; i++) {
+      const ty = topY + 6 + i * (d.height * 0.22);
+      const half = 12 + i * 6;
+      const grad = ctx.createLinearGradient(topX - half, ty, topX + half, ty);
+      grad.addColorStop(0, "#1f4a24");
+      grad.addColorStop(0.5, "#2e6b33");
+      grad.addColorStop(1, "#16371b");
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.moveTo(topX, ty - 16);
+      ctx.lineTo(topX - half, ty + 6);
+      ctx.lineTo(topX + half, ty + 6);
+      ctx.closePath();
+      ctx.fill();
+    }
+  } else {
+    // Broadleaf canopy: clustered blobs, dark base then lit highlights
+    for (let i = 0; i < d.blobs.length; i++) {
+      const b = d.blobs[i];
+      const bx = topX + b.dx;
+      const by = topY + b.dy;
+      const grad = ctx.createRadialGradient(bx - b.r * 0.4, by - b.r * 0.4, b.r * 0.1, bx, by, b.r);
+      grad.addColorStop(0, d.shades[i]);
+      grad.addColorStop(1, "rgba(20,50,20,0.95)");
+      ctx.fillStyle = grad;
+      ctx.beginPath(); ctx.arc(bx, by, b.r, 0, Math.PI * 2); ctx.fill();
+    }
+    // Sunlit crown
+    ctx.fillStyle = "rgba(150,205,110,0.35)";
+    ctx.beginPath();
+    ctx.arc(topX - 6, topY - 10, 10, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+// ----------------------------------------------------------- character draw
+function drawCharacter(x, y, facing, walkPhase, moving, isMe) {
+  const shirt = isMe ? "#4a90d9" : "#d9704a";
+  const shirtDark = isMe ? "#2f6699" : "#a04d2e";
+  const skin = "#e8b98a";
+  const hair = isMe ? "#3a2a1a" : "#241a12";
+
+  // Shadow
+  ctx.save();
+  ctx.globalAlpha = 0.32;
+  ctx.fillStyle = "#000";
+  ctx.beginPath(); ctx.ellipse(x + 3, y + 5, 13, 7, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(facing);
+
+  const swing = moving ? Math.sin(walkPhase) * 5 : 0;
+
+  // Legs (forward = +x)
+  ctx.fillStyle = "#33414f";
+  for (const side of [-1, 1]) {
+    const off = side * 5;
+    ctx.beginPath();
+    ctx.ellipse(2 + (side > 0 ? swing : -swing), off, 7, 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Arms
+  ctx.fillStyle = shirtDark;
+  for (const side of [-1, 1]) {
+    ctx.beginPath();
+    ctx.ellipse(1 + (side > 0 ? -swing : swing), side * 10, 6, 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Torso
+  const tg = ctx.createLinearGradient(-12, -10, 12, 10);
+  tg.addColorStop(0, shirt);
+  tg.addColorStop(1, shirtDark);
+  ctx.fillStyle = tg;
+  ctx.beginPath(); ctx.ellipse(0, 0, 13, 11, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = "rgba(0,0,0,0.35)";
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Head
+  ctx.fillStyle = skin;
+  ctx.beginPath(); ctx.arc(4, 0, 8, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = "rgba(0,0,0,0.25)";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Hair covers the back of the head
+  ctx.fillStyle = hair;
+  ctx.beginPath(); ctx.arc(1.5, 0, 7.4, Math.PI * 0.45, Math.PI * 1.55); ctx.fill();
+
+  ctx.restore();
+
+  // Name tag for other players
+  if (!isMe) {
+    ctx.fillStyle = "rgba(0,0,0,0.5)";
+    ctx.font = "11px ui-sans-serif, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("survivor", x, y - 24);
+  }
+}
+
+// ------------------------------------------------------------ fx particles
+const particles = [];
+const floaters = [];
+
+function spawnHarvestFx(x, y) {
+  for (let i = 0; i < 18; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const sp = 30 + Math.random() * 90;
+    const leaf = Math.random() < 0.6;
+    particles.push({
+      x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 40,
+      life: 0.7 + Math.random() * 0.6, max: 1.3,
+      size: 2 + Math.random() * 3,
+      rot: Math.random() * Math.PI, vr: (Math.random() - 0.5) * 8,
+      color: leaf ? `hsl(${90 + Math.random() * 40},60%,${30 + Math.random() * 25}%)` : "#7a5230",
+    });
+  }
+  floaters.push({ x, y: y - 10, text: "+1 🪵", life: 1.1, max: 1.1 });
+}
+
+function updateFx(dt) {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.life -= dt;
+    if (p.life <= 0) { particles.splice(i, 1); continue; }
+    p.vy += 220 * dt;
+    p.x += p.vx * dt; p.y += p.vy * dt;
+    p.vx *= 0.98;
+    p.rot += p.vr * dt;
+  }
+  for (let i = floaters.length - 1; i >= 0; i--) {
+    const f = floaters[i];
+    f.life -= dt;
+    if (f.life <= 0) { floaters.splice(i, 1); continue; }
+    f.y -= 22 * dt;
+  }
+}
+
+function drawFx() {
+  for (const p of particles) {
+    ctx.save();
+    ctx.globalAlpha = clamp(p.life / p.max, 0, 1);
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.rot);
+    ctx.fillStyle = p.color;
+    ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size);
+    ctx.restore();
+  }
+  ctx.textAlign = "center";
+  ctx.font = "bold 15px ui-sans-serif, sans-serif";
+  for (const f of floaters) {
+    ctx.save();
+    ctx.globalAlpha = clamp(f.life / f.max, 0, 1);
+    ctx.fillStyle = "#ffe08a";
+    ctx.strokeStyle = "rgba(0,0,0,0.6)";
+    ctx.lineWidth = 3;
+    ctx.strokeText(f.text, f.x, f.y);
+    ctx.fillText(f.text, f.x, f.y);
+    ctx.restore();
+  }
+}
+
+// ------------------------------------------------------------ environment
+const stars = (() => {
+  const r = mulberry32(99);
+  return Array.from({ length: 90 }, () => ({ x: r() * W, y: r() * H * 0.7, s: 0.5 + r() * 1.4, tw: r() * Math.PI * 2 }));
+})();
+
+function drawEnvironment(time, tOfDay) {
+  const sun = Math.sin(tOfDay * Math.PI * 2 - Math.PI / 2); // -1 midnight, +1 noon
+  const dayAmt = clamp((sun + 0.15) / 0.9, 0, 1);
+  const night = 1 - dayAmt;
+
+  // Stars fade in at night
+  if (night > 0.05) {
+    ctx.save();
+    for (const s of stars) {
+      ctx.globalAlpha = night * (0.4 + 0.6 * Math.abs(Math.sin(time * 0.8 + s.tw)));
+      ctx.fillStyle = "#dce8ff";
+      ctx.beginPath(); ctx.arc(s.x, s.y, s.s, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // Night cool overlay
+  if (night > 0.02) {
+    ctx.fillStyle = `rgba(12,24,52,${0.55 * night})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // Warm dawn/dusk glow
+  const warmth = 1 - Math.abs(sun);
+  if (warmth > 0.1 && night < 0.9) {
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, `rgba(255,150,70,${0.22 * warmth})`);
+    grad.addColorStop(1, `rgba(255,110,40,${0.05 * warmth})`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // Sunlight wash from upper area during the day
+  if (dayAmt > 0.1) {
+    const grad = ctx.createRadialGradient(W * 0.5, -H * 0.2, 50, W * 0.5, -H * 0.2, H * 1.2);
+    grad.addColorStop(0, `rgba(255,245,200,${0.18 * dayAmt})`);
+    grad.addColorStop(1, "rgba(255,245,200,0)");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // Vignette
+  const vig = ctx.createRadialGradient(W / 2, H / 2, H * 0.35, W / 2, H / 2, H * 0.85);
+  vig.addColorStop(0, "rgba(0,0,0,0)");
+  vig.addColorStop(1, "rgba(0,0,0,0.42)");
+  ctx.fillStyle = vig;
+  ctx.fillRect(0, 0, W, H);
+}
+
+// ------------------------------------------------------------------- input
 const keys = {};
-addEventListener("keydown", e => keys[e.key.toLowerCase()] = true);
-addEventListener("keyup", e => keys[e.key.toLowerCase()] = false);
+addEventListener("keydown", (e) => { keys[e.key.toLowerCase()] = true; });
+addEventListener("keyup", (e) => { keys[e.key.toLowerCase()] = false; });
 
 let local = { x: 500, y: 350 };
+let facing = 0;          // radians, 0 = facing right
+let walkPhase = 0;
+let room = null;
+let myId = null;
+let connected = false;
 
-canvas.addEventListener("click", e => {
+const treePositions = new Map();
+const lastTreeIds = new Set();
+const playerAnim = new Map(); // id -> { px, py, phase, facing, moving }
+
+canvas.addEventListener("click", (e) => {
   const rect = canvas.getBoundingClientRect();
-  const scaleX = canvas.width / rect.width;
-  const scaleY = canvas.height / rect.height;
-  const mx = (e.clientX - rect.left) * scaleX;
-  const my = (e.clientY - rect.top) * scaleY;
-
+  const mx = (e.clientX - rect.left) * (canvas.width / rect.width);
+  const my = (e.clientY - rect.top) * (canvas.height / rect.height);
   if (!room || !room.state) return;
 
   let closest = null, closestDist = Infinity;
@@ -47,84 +468,147 @@ canvas.addEventListener("click", e => {
     const d = Math.hypot(tree.x - mx, tree.y - my);
     if (d < closestDist) { closestDist = d; closest = id; }
   });
-  if (closest && closestDist < 40) {
-    room.send("harvest", { treeId: closest });
-  }
+  if (closest && closestDist < 45) room.send("harvest", { treeId: closest });
 });
+
+// ------------------------------------------------------------------ network
+const proto = location.protocol === "https:" ? "wss" : "ws";
+const endpoint = `${proto}://${location.host}`;
+const client = new Colyseus.Client(endpoint);
 
 async function connect() {
   try {
     room = await client.joinOrCreate("survival");
     myId = room.sessionId;
-    console.log("Joined room", room.roomId, "as", myId);
-
-    room.onStateChange.once(state => {
+    connected = true;
+    room.onStateChange.once((state) => {
       const me = state.players.get(myId);
       if (me) { local.x = me.x; local.y = me.y; }
     });
-
-    setInterval(() => {
-      if (room) room.send("move", { x: local.x, y: local.y });
-    }, 50);
-
-    requestAnimationFrame(loop);
+    room.onLeave(() => { connected = false; });
+    setInterval(() => { if (room) room.send("move", { x: local.x, y: local.y }); }, 50);
   } catch (err) {
     console.error(err);
-    hud.textContent = "Connection failed — check console";
+    statsEl.textContent = "Connection failed — see console";
   }
 }
 
-function loop() {
-  const speed = 4;
+// --------------------------------------------------------------------- loop
+const startTime = performance.now();
+const DAY_LENGTH = 180000; // 3 minutes
+
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  const time = (now - startTime) / 1000;
+  // Start mid-morning so the world opens in daylight, then cycles.
+  const tOfDay = (((now - startTime) / DAY_LENGTH) + 0.35) % 1;
+
+  // Movement
+  const speed = 170; // px/sec
   let dx = 0, dy = 0;
   if (keys["w"] || keys["arrowup"]) dy -= 1;
   if (keys["s"] || keys["arrowdown"]) dy += 1;
   if (keys["a"] || keys["arrowleft"]) dx -= 1;
   if (keys["d"] || keys["arrowright"]) dx += 1;
-  if (dx && dy) { dx *= 0.707; dy *= 0.707; }
-  local.x = Math.max(20, Math.min(980, local.x + dx * speed));
-  local.y = Math.max(20, Math.min(680, local.y + dy * speed));
+  const moving = dx !== 0 || dy !== 0;
+  if (moving) {
+    const len = Math.hypot(dx, dy);
+    dx /= len; dy /= len;
+    local.x = clamp(local.x + dx * speed * dt, 20, W - 20);
+    local.y = clamp(local.y + dy * speed * dt, 20, H - 20);
+    facing = Math.atan2(dy, dx);
+    walkPhase += dt * 11;
+  }
 
-  ctx.fillStyle = "#2a3a2a";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  // --- world ---
+  ctx.drawImage(terrain, 0, 0);
 
   if (room && room.state) {
-    room.state.trees.forEach(tree => {
-      ctx.fillStyle = "#5a3a1a";
-      ctx.fillRect(tree.x - 3, tree.y, 6, 14);
-      ctx.beginPath();
-      ctx.arc(tree.x, tree.y - 6, 16, 0, Math.PI * 2);
-      ctx.fillStyle = "#2e7a2e";
-      ctx.fill();
+    // Track tree removal for harvest effects
+    const currentIds = new Set();
+    room.state.trees.forEach((tree, id) => {
+      currentIds.add(id);
+      treePositions.set(id, { x: tree.x, y: tree.y });
     });
+    for (const id of lastTreeIds) {
+      if (!currentIds.has(id)) {
+        const pos = treePositions.get(id);
+        if (pos) spawnHarvestFx(pos.x, pos.y);
+      }
+    }
+    lastTreeIds.clear();
+    currentIds.forEach((id) => lastTreeIds.add(id));
 
-    room.state.players.forEach((player, id) => {
+    // Trees sorted by y so nearer ones overlap farther ones
+    const trees = [];
+    room.state.trees.forEach((tree, id) => trees.push({ id, x: tree.x, y: tree.y }));
+    trees.sort((a, b) => a.y - b.y);
+    for (const t of trees) drawTree(t, time);
+
+    // Players
+    const players = [];
+    room.state.players.forEach((p, id) => players.push({ id, p }));
+    players.sort((a, b) => {
+      const ay = a.id === myId ? local.y : a.p.y;
+      const by = b.id === myId ? local.y : b.p.y;
+      return ay - by;
+    });
+    for (const { id, p } of players) {
       const isMe = id === myId;
-      const px = isMe ? local.x : player.x;
-      const py = isMe ? local.y : player.y;
+      let anim = playerAnim.get(id);
+      if (!anim) { anim = { px: p.x, py: p.y, phase: 0, facing: 0, moving: false }; playerAnim.set(id, anim); }
 
-      ctx.beginPath();
-      ctx.arc(px, py, 14, 0, Math.PI * 2);
-      ctx.fillStyle = isMe ? "#4aa3ff" : "#ff7a4a";
-      ctx.fill();
-      ctx.strokeStyle = "#000";
-      ctx.stroke();
+      let px, py, f, phase, mv;
+      if (isMe) {
+        px = local.x; py = local.y; f = facing; phase = walkPhase; mv = moving;
+      } else {
+        const moved = Math.hypot(p.x - anim.px, p.y - anim.py) > 0.4;
+        if (moved) { anim.facing = Math.atan2(p.y - anim.py, p.x - anim.px); anim.phase += dt * 11; }
+        anim.moving = moved; anim.px = p.x; anim.py = p.y;
+        px = p.x; py = p.y; f = anim.facing; phase = anim.phase; mv = anim.moving;
+      }
 
-      ctx.fillStyle = "#fff";
-      ctx.font = "12px sans-serif";
+      drawCharacter(px, py, f, phase, mv, isMe);
+
+      // Wood counter above head
+      ctx.fillStyle = "rgba(0,0,0,0.55)";
+      ctx.font = "bold 12px ui-sans-serif, sans-serif";
       ctx.textAlign = "center";
-      ctx.fillText(`🪵 ${player.wood}`, px, py - 22);
-    });
+      const label = `🪵 ${p.wood}`;
+      const w = ctx.measureText(label).width;
+      ctx.beginPath();
+      if (ctx.roundRect) { ctx.roundRect(px - w / 2 - 5, py - 40, w + 10, 17, 8); ctx.fill(); }
+      else ctx.fillRect(px - w / 2 - 5, py - 40, w + 10, 17);
+      ctx.fillStyle = "#fff";
+      ctx.fillText(label, px, py - 28);
+    }
+  } else {
+    drawCharacter(local.x, local.y, facing, walkPhase, moving, true);
+  }
 
+  updateFx(dt);
+  drawFx();
+  drawEnvironment(time, tOfDay);
+
+  // --- HUD ---
+  if (connected && room && room.state) {
     const me = room.state.players.get(myId);
-    hud.textContent = me
-      ? `You: 🪵 ${me.wood} | Players: ${room.state.players.size} | Trees: ${room.state.trees.size}`
-      : "Loading...";
+    const hours = Math.floor(tOfDay * 24);
+    const mins = Math.floor((tOfDay * 24 * 60) % 60);
+    const phaseName = tOfDay < 0.25 ? "🌅 Dawn" : tOfDay < 0.5 ? "☀️ Day" : tOfDay < 0.75 ? "🌇 Dusk" : "🌙 Night";
+    statsEl.innerHTML =
+      `<div class="big">🪵 ${me ? me.wood : 0} wood</div>` +
+      `<div class="row"><span class="muted">Survivors</span><span><b>${room.state.players.size}</b></span></div>` +
+      `<div class="row"><span class="muted">Trees left</span><span><b>${room.state.trees.size}</b></span></div>` +
+      `<div class="row"><span class="muted">${phaseName}</span><span>${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}</span></div>`;
   }
 
   requestAnimationFrame(loop);
 }
 
+requestAnimationFrame(loop);
 connect();
 </script>
 </body>
