@@ -1,5 +1,6 @@
 import colyseus from "colyseus";
 const { Server, Room } = colyseus;
+import { WebSocketTransport } from "@colyseus/ws-transport";
 
 import { Schema, MapSchema, type } from "@colyseus/schema";
 import express from "express";
@@ -19,7 +20,15 @@ class Tree extends Schema {}
 type("number")(Tree.prototype, "x");
 type("number")(Tree.prototype, "y");
 
-class State extends Schema {}
+class State extends Schema {
+  constructor() {
+    super();
+    // MapSchema fields must be initialized; @colyseus/schema does not
+    // auto-create them (unlike ArraySchema), so they'd otherwise be undefined.
+    this.players = new MapSchema();
+    this.trees = new MapSchema();
+  }
+}
 type({ map: Player })(State.prototype, "players");
 type({ map: Tree })(State.prototype, "trees");
 type("number")(State.prototype, "worldSeed");
@@ -89,7 +98,9 @@ app.use(express.static(path.join(__dirname, "public")));
 app.get("/healthz", (_req, res) => res.send("ok"));
 
 const server = http.createServer(app);
-const gameServer = new Server({ server });
+const gameServer = new Server({
+  transport: new WebSocketTransport({ server }),
+});
 gameServer.define("survival", SurvivalRoom);
 
 // IMPORTANT: use Render's PORT, bind to 0.0.0.0
