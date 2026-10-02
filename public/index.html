@@ -37,14 +37,49 @@
     border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; font-size: 11px;
     font-family: inherit;
   }
+  .vital { margin-bottom: 7px; }
+  .vital:last-child { margin-bottom: 0; }
+  .vital .row { font-size: 12px; }
+  .bar { height: 9px; margin-top: 3px; border-radius: 6px; background: rgba(255,255,255,.12); overflow: hidden; }
+  .bar > i { display: block; height: 100%; width: 100%; transition: width .15s linear; }
+  #notice {
+    position: fixed; left: 50%; bottom: 84px; transform: translateX(-50%);
+    z-index: 12; background: rgba(20,10,10,.85); border: 1px solid rgba(255,180,120,.35);
+    color: #ffd9a8; padding: 8px 16px; border-radius: 8px; font-size: 14px;
+    opacity: 0; pointer-events: none; transition: opacity .3s;
+  }
+  #death {
+    position: fixed; inset: 0; z-index: 20; display: none;
+    align-items: center; justify-content: center; flex-direction: column; gap: 18px;
+    background: rgba(20,0,0,.72); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
+    text-align: center;
+  }
+  #death.show { display: flex; }
+  #death h1 { margin: 0; font-size: 40px; letter-spacing: .04em; }
+  #death p { margin: 0; opacity: .8; }
+  #respawn {
+    font: inherit; font-size: 16px; padding: 10px 26px; border-radius: 8px; cursor: pointer;
+    border: 1px solid rgba(255,255,255,.25); background: #b6472f; color: #fff;
+  }
+  #respawn:hover { background: #d0563c; }
 </style>
 </head>
 <body>
 <div id="hud">
   <div class="panel" id="stats">Connecting…</div>
+  <div class="panel" id="vitals"></div>
+  <div class="panel" id="inv"></div>
   <div class="panel muted">
-    <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move &nbsp;·&nbsp; click a tree to chop</div>
+    <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move · hold <kbd>Shift</kbd> sprint</div>
+    <div>click resources to gather · <kbd>F</kbd> repeat · <kbd>R</kbd> drink at pond · <kbd>E</kbd> eat · <kbd>Q</kbd> drink carried</div>
+    <div><kbd>1</kbd> axe · <kbd>2</kbd> pickaxe · <kbd>3</kbd> campfire · <kbd>4</kbd> stoke fire</div>
   </div>
+</div>
+<div id="notice"></div>
+<div id="death">
+  <h1>You collapsed</h1>
+  <p id="deathCause">Your body gave out.</p>
+  <button id="respawn">Respawn</button>
 </div>
 <canvas id="game"></canvas>
 
@@ -71,6 +106,14 @@ const WORLD_CZ = H / 2;
 
 const canvas = document.getElementById("game");
 const statsEl = document.getElementById("stats");
+const vitalsEl = document.getElementById("vitals");
+const invEl = document.getElementById("inv");
+const noticeEl = document.getElementById("notice");
+const deathEl = document.getElementById("death");
+const deathCauseEl = document.getElementById("deathCause");
+document.getElementById("respawn").addEventListener("click", () => {
+  if (room) room.send("respawn");
+});
 
 // ---------------------------------------------------------------- utilities
 function mulberry32(a) {
@@ -247,10 +290,47 @@ const trunkMat = new THREE.MeshStandardMaterial({ color: 0x6b4526, roughness: 0.
 const pineGeo = new THREE.ConeGeometry(1, 1, 8);
 const blobGeo = new THREE.IcosahedronGeometry(1, 0);
 
-function makeTree(id) {
+function makeTree(id, kind) {
   const rnd = mulberry32(hashStr(id));
-  const pine = rnd() < 0.45;
   const group = new THREE.Group();
+
+  if (kind === "berry") {
+    // Low bush with red berries.
+    const bushMat = new THREE.MeshStandardMaterial({ color: 0x2f5a26, roughness: 1, flatShading: true });
+    for (let i = 0; i < 4; i++) {
+      const blob = new THREE.Mesh(blobGeo, bushMat);
+      const r = 2.6 + rnd() * 1.6;
+      blob.scale.setScalar(r);
+      blob.position.set((rnd() - 0.5) * 4, 2.4 + rnd() * 1.6, (rnd() - 0.5) * 4);
+      blob.castShadow = true;
+      group.add(blob);
+    }
+    const berryMat = new THREE.MeshStandardMaterial({ color: 0xc23b3b, roughness: 0.6, emissive: 0x3a0b0b });
+    for (let i = 0; i < 9; i++) {
+      const berry = new THREE.Mesh(new THREE.SphereGeometry(0.42, 8, 6), berryMat);
+      berry.position.set((rnd() - 0.5) * 5, 2.6 + rnd() * 3, (rnd() - 0.5) * 5);
+      group.add(berry);
+    }
+    group.userData.swayAmp = 0.015;
+    return group;
+  }
+
+  if (kind === "fiber") {
+    // Tall dry grass clump.
+    const stalkMat = new THREE.MeshStandardMaterial({ color: 0x9aa84e, roughness: 1 });
+    for (let i = 0; i < 7; i++) {
+      const h = 3 + rnd() * 3;
+      const stalk = new THREE.Mesh(new THREE.ConeGeometry(0.28, h, 4), stalkMat);
+      stalk.position.set((rnd() - 0.5) * 4, h / 2, (rnd() - 0.5) * 4);
+      stalk.rotation.z = (rnd() - 0.5) * 0.4;
+      stalk.castShadow = true;
+      group.add(stalk);
+    }
+    group.userData.swayAmp = 0.05;
+    return group;
+  }
+
+  const pine = kind === "pine";
   const trunkH = pine ? 9 + rnd() * 4 : 7 + rnd() * 4;
   const trunkR = 0.9 + rnd() * 0.5;
 
@@ -300,6 +380,7 @@ function makeTree(id) {
   }
 
   group.rotation.y = rnd() * Math.PI * 2;
+  group.userData.swayAmp = 0.02;
   return group;
 }
 
@@ -309,14 +390,14 @@ function syncTrees(state, time) {
     seen.add(id);
     let mesh = treeMeshes.get(id);
     if (!mesh) {
-      mesh = makeTree(id);
+      mesh = makeTree(id, tree.kind);
       mesh.position.set(tree.x, 0, tree.y);
       mesh.userData.treeId = id;
       treeMeshes.set(id, mesh);
       treeGroup.add(mesh);
     }
     // Gentle sway, mirroring the original animation.
-    mesh.rotation.z = Math.sin(time * 0.9 + tree.x * 0.05) * 0.02;
+    mesh.rotation.z = Math.sin(time * 0.9 + tree.x * 0.05) * (mesh.userData.swayAmp || 0.02);
   });
   for (const [id, mesh] of treeMeshes) {
     if (!seen.has(id)) {
@@ -327,14 +408,185 @@ function syncTrees(state, time) {
   }
 }
 
+// ------------------------------------------------------------------- rocks
+const rockGroup = new THREE.Group();
+scene.add(rockGroup);
+const rockMeshes = new Map();
+const rockGeo = new THREE.DodecahedronGeometry(1, 0);
+const rockMat = new THREE.MeshStandardMaterial({ color: 0x8a8f86, roughness: 0.95, flatShading: true });
+
+function makeRock(id) {
+  const rnd = mulberry32(hashStr(id) ^ 0x9e3779b9);
+  const group = new THREE.Group();
+  const n = 2 + Math.floor(rnd() * 3);
+  for (let i = 0; i < n; i++) {
+    const m = new THREE.Mesh(rockGeo, rockMat);
+    const s = 3 + rnd() * 3;
+    m.scale.set(s, s * (0.7 + rnd() * 0.4), s);
+    m.position.set((rnd() - 0.5) * 6, s * 0.5, (rnd() - 0.5) * 6);
+    m.rotation.set(rnd(), rnd(), rnd());
+    m.castShadow = true;
+    m.receiveShadow = true;
+    group.add(m);
+  }
+  return group;
+}
+
+function syncRocks(state) {
+  const seen = new Set();
+  state.rocks.forEach((rock, id) => {
+    seen.add(id);
+    let mesh = rockMeshes.get(id);
+    if (!mesh) {
+      mesh = makeRock(id);
+      mesh.position.set(rock.x, 0, rock.y);
+      mesh.userData.rockId = id;
+      rockMeshes.set(id, mesh);
+      rockGroup.add(mesh);
+    }
+  });
+  for (const [id, mesh] of rockMeshes) {
+    if (!seen.has(id)) {
+      rockGroup.remove(mesh);
+      disposeGroup(mesh);
+      rockMeshes.delete(id);
+    }
+  }
+}
+
+// ---------------------------------------------------------------- campfires
+const fireGroup = new THREE.Group();
+scene.add(fireGroup);
+const fireMeshes = new Map();
+const emberMat = new THREE.MeshStandardMaterial({ color: 0xff7a2a, emissive: 0xff5a10, emissiveIntensity: 1.6, roughness: 1 });
+const stoneMat = new THREE.MeshStandardMaterial({ color: 0x6f7370, roughness: 1, flatShading: true });
+const fireLight = new THREE.PointLight(0xff9a4a, 0, 260, 2);
+scene.add(fireLight);
+
+function makeFire(id) {
+  const rnd = mulberry32(hashStr(id) ^ 0x85ebca6b);
+  const group = new THREE.Group();
+  // Ring of stones
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    const s = new THREE.Mesh(rockGeo, stoneMat);
+    s.scale.setScalar(0.8 + rnd() * 0.4);
+    s.position.set(Math.cos(a) * 4.2, 0.5, Math.sin(a) * 4.2);
+    s.castShadow = true;
+    group.add(s);
+  }
+  // Logs
+  const logMat = new THREE.MeshStandardMaterial({ color: 0x4a3018, roughness: 1, flatShading: true });
+  for (let i = 0; i < 3; i++) {
+    const log = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 6, 5), logMat);
+    log.rotation.z = Math.PI / 2;
+    log.rotation.y = (i / 3) * Math.PI;
+    log.position.y = 1.2;
+    group.add(log);
+  }
+  // Flame
+  const flame = new THREE.Mesh(new THREE.ConeGeometry(2.2, 6, 6), emberMat);
+  flame.position.y = 3.6;
+  group.add(flame);
+  group.userData.flame = flame;
+  return group;
+}
+
+function syncFires(state) {
+  const seen = new Set();
+  state.fires.forEach((fire, id) => {
+    seen.add(id);
+    let mesh = fireMeshes.get(id);
+    if (!mesh) {
+      mesh = makeFire(id);
+      mesh.position.set(fire.x, 0, fire.y);
+      mesh.userData.fireId = id;
+      fireMeshes.set(id, mesh);
+      fireGroup.add(mesh);
+    }
+    const frac = clamp(fire.fuel / 90, 0, 1.2);
+    const flick = 0.85 + Math.random() * 0.3;
+    mesh.userData.flame.scale.set(frac * flick, frac * (0.9 + Math.random() * 0.4), frac * flick);
+  });
+  for (const [id, mesh] of fireMeshes) {
+    if (!seen.has(id)) {
+      fireGroup.remove(mesh);
+      disposeGroup(mesh);
+      fireMeshes.delete(id);
+    }
+  }
+}
+
+// ------------------------------------------------------------------- ponds
+const waterGroup = new THREE.Group();
+scene.add(waterGroup);
+const waterMeshes = new Map();
+const waterMat = new THREE.MeshStandardMaterial({
+  color: 0x2f6f9e, roughness: 0.25, metalness: 0.1,
+  transparent: true, opacity: 0.85,
+});
+
+function makeWater(id) {
+  const rnd = mulberry32(hashStr(id) ^ 0xc2b2ae35);
+  const group = new THREE.Group();
+  const r = 26 + rnd() * 10;
+  const disc = new THREE.Mesh(new THREE.CircleGeometry(r, 24), waterMat);
+  disc.rotation.x = -Math.PI / 2;
+  disc.position.y = 0.06;
+  disc.receiveShadow = true;
+  group.add(disc);
+  // Damp bank ring so the pond edge reads against the grass.
+  const bank = new THREE.Mesh(new THREE.RingGeometry(r * 0.92, r * 1.16, 24),
+    new THREE.MeshStandardMaterial({ color: 0x5a4a2e, roughness: 1 }));
+  bank.rotation.x = -Math.PI / 2;
+  bank.position.y = 0.04;
+  group.add(bank);
+  group.userData.waterRadius = r;
+  return group;
+}
+
+function syncWater(state) {
+  const seen = new Set();
+  state.waters.forEach((w, id) => {
+    seen.add(id);
+    let mesh = waterMeshes.get(id);
+    if (!mesh) {
+      mesh = makeWater(id);
+      mesh.position.set(w.x, 0, w.y);
+      mesh.userData.waterId = id;
+      waterMeshes.set(id, mesh);
+      waterGroup.add(mesh);
+    }
+  });
+  for (const [id, mesh] of waterMeshes) {
+    if (!seen.has(id)) {
+      waterGroup.remove(mesh);
+      disposeGroup(mesh);
+      waterMeshes.delete(id);
+    }
+  }
+}
+
 function disposeGroup(group) {
   group.traverse((o) => {
     if (o.isMesh) {
-      if (o.geometry !== trunkGeo && o.geometry !== pineGeo && o.geometry !== blobGeo) o.geometry.dispose();
-      if (Array.isArray(o.material)) o.material.forEach((m) => m.dispose());
-      else if (o.material) o.material.dispose();
+      if (!sharedAssets().has(o.geometry)) o.geometry.dispose();
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      for (const m of mats) if (m && !sharedAssets().has(m)) m.dispose();
     }
   });
+}
+
+// Assets reused across many meshes must survive any single group's disposal.
+let _sharedAssets = null;
+function sharedAssets() {
+  if (!_sharedAssets) {
+    _sharedAssets = new Set([
+      trunkGeo, pineGeo, blobGeo, rockGeo, particleGeo,
+      trunkMat, rockMat, emberMat, stoneMat, waterMat,
+    ]);
+  }
+  return _sharedAssets;
 }
 
 // -------------------------------------------------------------- player meshes
@@ -427,10 +679,26 @@ function makePlayer(isMe) {
   const armL = limb(-5.6, 17, 0, 1.5, 7.5, armMat);
   const armR = limb(5.6, 17, 0, 1.5, 7.5, armMat);
 
+  // A held tool, shown only when one is equipped. Attached to the right arm
+  // so it swings with the arm during chopping/mining.
+  const toolGroup = new THREE.Group();
+  const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.35, 7, 5), new THREE.MeshStandardMaterial({ color: 0x6b4526, roughness: 1 }));
+  handle.position.y = -7;
+  toolGroup.add(handle);
+  const axeHead = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.6, 0.5), new THREE.MeshStandardMaterial({ color: 0xb8bcc2, roughness: 0.5, metalness: 0.4 }));
+  axeHead.position.set(1.2, -9.5, 0);
+  toolGroup.add(axeHead);
+  const pickHead = new THREE.Mesh(new THREE.ConeGeometry(0.7, 4, 4), new THREE.MeshStandardMaterial({ color: 0xb8bcc2, roughness: 0.5, metalness: 0.4 }));
+  pickHead.rotation.z = Math.PI / 2;
+  pickHead.position.set(0, -10, 0);
+  toolGroup.add(pickHead);
+  toolGroup.visible = false;
+  armR.add(toolGroup);
+
   const woodLabel = makeWoodLabel();
   group.add(woodLabel.sprite);
 
-  return { group, torso, legL, legR, armL, armR, woodLabel, phase: 0, facing: 0, px: null, py: null, moving: false, isMe };
+  return { group, torso, legL, legR, armL, armR, toolGroup, axeHead, pickHead, woodLabel, phase: 0, facing: 0, px: null, py: null, moving: false, isMe, swing: 0, tool: "none" };
 }
 
 // ------------------------------------------------------------ fx particles
@@ -530,28 +798,86 @@ let walkPhase = 0;
 let room = null;
 let myId = null;
 let connected = false;
+let lastAction = null;   // { type, id } of the last node swung at
 
-canvas.addEventListener("click", (e) => {
-  if (!room || !room.state) return;
+const raycaster = new THREE.Raycaster();
+
+// Raycast the pointer against every interactive node type and return the
+// closest hit together with its server-side id and type.
+function pickTarget(e) {
   const ndc = new THREE.Vector2(
     (e.clientX / window.innerWidth) * 2 - 1,
     -(e.clientY / window.innerHeight) * 2 + 1
   );
   raycaster.setFromCamera(ndc, camera);
-  const hits = raycaster.intersectObjects([...treeMeshes.values()], true);
-  if (!hits.length) return;
-  let o = hits[0].object;
-  while (o && !o.userData.treeId) o = o.parent;
-  const treeId = o ? o.userData.treeId : null;
-  if (!treeId) return;
-  const tree = room.state.trees.get(treeId);
-  if (!tree) return;
-  if (Math.hypot(tree.x - local.x, tree.y - local.y) <= 60) {
-    room.send("harvest", { treeId });
+  const groups = [
+    ["tree", treeMeshes, "treeId"],
+    ["rock", rockMeshes, "rockId"],
+    ["fire", fireMeshes, "fireId"],
+    ["water", waterMeshes, "waterId"],
+  ];
+  let best = null;
+  for (const [type, meshes, key] of groups) {
+    const hits = raycaster.intersectObjects([...meshes.values()], true);
+    if (!hits.length) continue;
+    let o = hits[0].object;
+    while (o && !o.userData[key]) o = o.parent;
+    if (!o || !o.userData[key]) continue;
+    if (!best || hits[0].distance < best.dist) {
+      best = { type, id: o.userData[key], dist: hits[0].distance };
+    }
+  }
+  return best;
+}
+
+canvas.addEventListener("click", (e) => {
+  if (!room || !room.state) return;
+  const t = pickTarget(e);
+  if (!t) return;
+  room.send("interact", { targetType: t.type, targetId: t.id });
+  const a = players.get(myId);
+  if (a) a.swing = 1;
+  if (t.type !== "fire") {
+    lastAction = t;
   }
 });
 
-const raycaster = new THREE.Raycaster();
+addEventListener("keydown", (e) => {
+  const k = e.key.toLowerCase();
+  if (k === "f") {
+    if (lastAction && room) room.send("interact", { targetType: lastAction.type, targetId: lastAction.id });
+  } else if (k === "e") {
+    if (room) room.send("consume", { item: "food" });
+  } else if (k === "q") {
+    if (room) room.send("consume", { item: "water" });
+  } else if (k === "r") {
+    // Drink from the nearest pond within reach.
+    if (room && room.state) {
+      let best = null, bestD = Infinity;
+      room.state.waters.forEach((w, id) => {
+        const d = Math.hypot(w.x - local.x, w.y - local.y);
+        if (d < bestD) { bestD = d; best = id; }
+      });
+      if (best && bestD <= 70) room.send("interact", { targetType: "water", targetId: best });
+    }
+  } else if (k === "1") {
+    if (room) room.send("craft", { item: "axe" });
+  } else if (k === "2") {
+    if (room) room.send("craft", { item: "pickaxe" });
+  } else if (k === "3") {
+    if (room) room.send("craft", { item: "campfire" });
+  } else if (k === "4") {
+    // Stoke the nearest campfire within reach.
+    if (room && room.state) {
+      let best = null, bestD = Infinity;
+      room.state.fires.forEach((fire, id) => {
+        const d = Math.hypot(fire.x - local.x, fire.y - local.y);
+        if (d < bestD) { bestD = d; best = id; }
+      });
+      if (best && bestD <= 70) room.send("interact", { targetType: "fire", targetId: best });
+    }
+  }
+});
 
 // ------------------------------------------------------------------ network
 const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -567,17 +893,27 @@ async function connect() {
       const me = state.players.get(myId);
       if (me) { local.x = me.x; local.y = me.y; }
     });
+    room.onMessage("notice", (data) => showNotice(data && data.msg));
     room.onLeave(() => { connected = false; });
-    setInterval(() => { if (room) room.send("move", { x: local.x, y: local.y }); }, 50);
+    setInterval(() => {
+      if (room) room.send("move", { x: local.x, y: local.y, sprint: !!(keys["shift"] && (keys["w"] || keys["a"] || keys["s"] || keys["d"] || keys["arrowup"] || keys["arrowdown"] || keys["arrowleft"] || keys["arrowright"])) });
+    }, 50);
   } catch (err) {
     console.error(err);
     statsEl.textContent = "Connection failed — see console";
   }
 }
 
+let noticeUntil = 0;
+function showNotice(msg) {
+  if (!msg) return;
+  noticeEl.textContent = msg;
+  noticeEl.style.opacity = "1";
+  noticeUntil = performance.now() + 2200;
+}
+
 // --------------------------------------------------------------------- loop
 const startTime = performance.now();
-const DAY_LENGTH = 180000; // 3 minutes
 const clock = new THREE.Clock();
 
 // A day/night tint blended over the whole scene each frame.
@@ -599,15 +935,23 @@ function animate() {
   const dt = Math.min(0.05, clock.getDelta());
   const now = performance.now();
   const time = (now - startTime) / 1000;
-  const tOfDay = (((now - startTime) / DAY_LENGTH) + 0.35) % 1;
+
+  // Day/night is authoritative on the server so every client agrees.
+  const tOfDay = (room && room.state) ? room.state.timeOfDay : 0.35;
 
   // ---- movement ----
-  const speed = 170; // world units/sec
+  const me = (room && room.state) ? room.state.players.get(myId) : null;
+  const canMove = !me || me.alive;
+  const sprintKey = !!keys["shift"];
+  const sprinting = sprintKey && canMove && (!me || me.stamina > 1);
+  const speed = 170 * (sprinting ? 1.65 : (me && me.stamina <= 1 ? 0.5 : 1));
   let dx = 0, dy = 0;
-  if (keys["w"] || keys["arrowup"]) dy -= 1;
-  if (keys["s"] || keys["arrowdown"]) dy += 1;
-  if (keys["a"] || keys["arrowleft"]) dx -= 1;
-  if (keys["d"] || keys["arrowright"]) dx += 1;
+  if (canMove) {
+    if (keys["w"] || keys["arrowup"]) dy -= 1;
+    if (keys["s"] || keys["arrowdown"]) dy += 1;
+    if (keys["a"] || keys["arrowleft"]) dx -= 1;
+    if (keys["d"] || keys["arrowright"]) dx += 1;
+  }
   const moving = dx !== 0 || dy !== 0;
   if (moving) {
     const len = Math.hypot(dx, dy);
@@ -615,7 +959,7 @@ function animate() {
     local.x = clamp(local.x + dx * speed * dt, 20, W - 20);
     local.y = clamp(local.y + dy * speed * dt, 20, H - 20);
     facing = Math.atan2(dy, dx);
-    walkPhase += dt * 11;
+    walkPhase += dt * (sprinting ? 15 : 11);
   }
 
   // ---- day / night lighting ----
@@ -656,6 +1000,22 @@ function animate() {
   // ---- world ----
   if (room && room.state) {
     syncTrees(room.state, time);
+    syncRocks(room.state);
+    syncFires(room.state);
+    syncWater(room.state);
+
+    // A single light follows the nearest campfire so night stays readable.
+    let nearestFire = null, nearestD = Infinity;
+    room.state.fires.forEach((fire) => {
+      const d = Math.hypot(fire.x - local.x, fire.y - local.y);
+      if (d < nearestD) { nearestD = d; nearestFire = fire; }
+    });
+    if (nearestFire && nearestD < 500) {
+      fireLight.position.set(nearestFire.x, 22, nearestFire.y);
+      fireLight.intensity = 2.6 * clamp(nearestFire.fuel / 60, 0, 1) * (0.85 + Math.random() * 0.3);
+    } else {
+      fireLight.intensity = 0;
+    }
 
     const seen = new Set();
     room.state.players.forEach((p, id) => {
@@ -680,14 +1040,31 @@ function animate() {
       // so rotate so it points along the movement direction.
       a.group.rotation.y = Math.PI / 2 - f;
 
-      const swing = mv ? Math.sin(phase) * 0.7 : 0;
-      a.legL.rotation.x = swing;
-      a.legR.rotation.x = -swing;
-      a.armL.rotation.x = -swing * 0.8;
-      a.armR.rotation.x = swing * 0.8;
+      // Fade out the body while dead.
+      a.group.visible = p.alive;
+      a.woodLabel.sprite.visible = p.alive;
+
+      // Held tool mesh.
+      a.tool = p.tool;
+      const hasTool = p.tool === "axe" || p.tool === "pickaxe";
+      a.toolGroup.visible = hasTool;
+      if (hasTool) {
+        a.axeHead.visible = p.tool === "axe";
+        a.pickHead.visible = p.tool === "pickaxe";
+      }
+
+      // Chop / mine swing: a short burst of arm motion triggered by actions.
+      if (p.action) a.swing = 1;
+      a.swing = Math.max(0, a.swing - dt * 3.2);
+      const swingPose = Math.sin((1 - a.swing) * Math.PI) * 1.5 * a.swing;
+
+      const walk = mv ? Math.sin(phase) * 0.7 : 0;
+      a.legL.rotation.x = walk;
+      a.legR.rotation.x = -walk;
+      a.armL.rotation.x = -walk * 0.8;
+      a.armR.rotation.x = walk * 0.8 - swingPose;
 
       paintWoodLabel(a.woodLabel, p.wood);
-      a.woodLabel.sprite.visible = true;
     });
 
     for (const [id, a] of players) {
@@ -710,16 +1087,54 @@ function animate() {
   renderer.render(scene, camera);
 
   // ---- HUD ----
+  if (noticeUntil && now > noticeUntil) {
+    noticeEl.style.opacity = "0";
+    noticeUntil = 0;
+  }
   if (connected && room && room.state) {
     const me = room.state.players.get(myId);
     const hours = Math.floor(tOfDay * 24);
     const mins = Math.floor((tOfDay * 24 * 60) % 60);
     const phaseName = tOfDay < 0.25 ? "\u{1F305} Dawn" : tOfDay < 0.5 ? "\u2600\uFE0F Day" : tOfDay < 0.75 ? "\u{1F307} Dusk" : "\u{1F319} Night";
     statsEl.innerHTML =
-      `<div class="big">\u{1FAB5} ${me ? me.wood : 0} wood</div>` +
+      `<div class="big">Day ${room.state.day} · ${phaseName} ${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}</div>` +
       `<div class="row"><span class="muted">Survivors</span><span><b>${room.state.players.size}</b></span></div>` +
-      `<div class="row"><span class="muted">Trees left</span><span><b>${room.state.trees.size}</b></span></div>` +
-      `<div class="row"><span class="muted">${phaseName}</span><span>${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}</span></div>`;
+      `<div class="row"><span class="muted">Nodes left</span><span><b>${room.state.trees.size + room.state.rocks.size}</b></span></div>` +
+      (me ? `<div class="row"><span class="muted">Deaths</span><span><b>${me.deaths}</b></span></div>` : "");
+
+    if (me) {
+      const vit = [
+        ["\u2764\uFE0F Health", me.hp, "#e0574b"],
+        ["\u{1F356} Food", me.hunger, "#d9a441"],
+        ["\u{1F4A7} Water", me.thirst, "#4aa3d9"],
+        ["\u{1F525} Warmth", me.warmth, "#e07a3a"],
+        ["\u26A1 Stamina", me.stamina, "#8fd14a"],
+      ];
+      vitalsEl.innerHTML = vit.map(([label, v, col]) =>
+        `<div class="vital"><div class="row"><span class="muted">${label}</span><span>${Math.round(v)}</span></div>` +
+        `<div class="bar"><i style="width:${clamp(v, 0, 100)}%;background:${col}"></i></div></div>`
+      ).join("");
+
+      const tool = me.tool === "none" ? "bare hands" : `${me.tool} (${me.toolDurability})`;
+      invEl.innerHTML =
+        `<div class="row"><span class="muted">\u{1FAB5} Wood</span><span><b>${me.wood}</b></span></div>` +
+        `<div class="row"><span class="muted">\u{1FAA8} Stone</span><span><b>${me.stone}</b></span></div>` +
+        `<div class="row"><span class="muted">\u{1F33F} Fiber</span><span><b>${me.fiber}</b></span></div>` +
+        `<div class="row"><span class="muted">\u{1F356} Food</span><span><b>${me.food}</b></span></div>` +
+        `<div class="row"><span class="muted">\u{1F4A7} Water</span><span><b>${me.water}</b></span></div>` +
+        `<div class="row"><span class="muted">Tool</span><span><b>${tool}</b></span></div>` +
+        `<div class="muted" style="margin-top:6px">1 axe · 2 pickaxe · 3 campfire · 4 stoke</div>`;
+
+      const dead = !me.alive;
+      deathEl.classList.toggle("show", dead);
+      if (dead) {
+        const cause = me.thirst <= 0 ? "You died of thirst."
+          : me.hunger <= 0 ? "You starved."
+          : me.warmth < 20 ? "You froze in the cold."
+          : "Your body gave out.";
+        deathCauseEl.textContent = `${cause} You lost everything you were carrying.`;
+      }
+    }
   }
 }
 
