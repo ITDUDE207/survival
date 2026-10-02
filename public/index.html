@@ -61,13 +61,20 @@ import * as THREE from "three";
 
 "use strict";
 
-// The simulation keeps using the original 2D top-down coordinates (x, y) with
-// the world spanning W x H. We map that plane onto the XZ plane of the 3D
-// scene (scene.x = world x, scene.z = world y) and look straight down at it.
+// The simulation keeps the original 2D top-down coordinates (x, y) over a
+// W x H world. We map that plane onto the scene XZ plane (scene.x = world x,
+// scene.z = world y) and view it from an elevated, tilted camera so the scene
+// reads as real 3D rather than a flat top-down slice.
 const W = 1000;
 const H = 700;
 const WORLD_CX = W / 2;
 const WORLD_CZ = H / 2;
+
+// Camera rig: a top-down 3D view pitched in from the south, similar to a
+// classic action-RPG. Height + distance give a ~43° pitch so we clearly see
+// the vertical faces and depth of objects, not just their tops.
+const CAM_HEIGHT = 520;
+const CAM_DIST = 560;
 
 const canvas = document.getElementById("game");
 const statsEl = document.getElementById("stats");
@@ -96,10 +103,10 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0a1a10);
-scene.fog = new THREE.Fog(0x0a1a10, 900, 1900);
+scene.background = new THREE.Color(0x87b6d8);
+scene.fog = new THREE.Fog(0x87b6d8, 1400, 2600);
 
-const camera = new THREE.PerspectiveCamera(42, 1, 1, 4000);
+const camera = new THREE.PerspectiveCamera(46, 1, 1, 6000);
 
 function resize() {
   const w = window.innerWidth, h = window.innerHeight;
@@ -114,20 +121,31 @@ const sun = new THREE.DirectionalLight(0xfff2cf, 2.4);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
 sun.shadow.camera.near = 1;
-sun.shadow.camera.far = 900;
-sun.shadow.camera.left = -280;
-sun.shadow.camera.right = 280;
-sun.shadow.camera.top = 280;
-sun.shadow.camera.bottom = -280;
+sun.shadow.camera.far = 1400;
+sun.shadow.camera.left = -320;
+sun.shadow.camera.right = 320;
+sun.shadow.camera.top = 320;
+sun.shadow.camera.bottom = -320;
 sun.shadow.bias = -0.0006;
-sun.shadow.normalBias = 0.6;
+sun.shadow.normalBias = 0.8;
 scene.add(sun);
 scene.add(sun.target);
 
-const hemi = new THREE.HemisphereLight(0xbcd8ff, 0x2c3a20, 0.9);
+const hemi = new THREE.HemisphereLight(0xbcd8ff, 0x3a4a28, 0.85);
 scene.add(hemi);
 
 // ------------------------------------------------------------------- ground
+// A large solid base so the play area never shows an edge from the tilted
+// camera, with the detailed grass texture layered on top at the right scale.
+const baseGround = new THREE.Mesh(
+  new THREE.PlaneGeometry(6000, 6000),
+  new THREE.MeshStandardMaterial({ color: 0x466f30, roughness: 1 })
+);
+baseGround.rotation.x = -Math.PI / 2;
+baseGround.position.set(WORLD_CX, -0.05, WORLD_CZ);
+baseGround.receiveShadow = true;
+scene.add(baseGround);
+
 const groundMat = new THREE.MeshStandardMaterial({ map: makeGroundTexture(), roughness: 1, metalness: 0 });
 const ground = new THREE.Mesh(new THREE.PlaneGeometry(W + 400, H + 400), groundMat);
 ground.rotation.x = -Math.PI / 2;
@@ -135,8 +153,7 @@ ground.position.set(WORLD_CX, 0, WORLD_CZ);
 ground.receiveShadow = true;
 scene.add(ground);
 
-// Scattered detail (rocks / grass tufts) baked as sprites so they read well
-// from directly above without the cost of hundreds of meshes.
+// Baked ground detail (rocks / grass / flowers) as an alpha-tested layer.
 const detailMat = new THREE.MeshBasicMaterial({
   map: makeDetailTexture(),
   transparent: true,
@@ -156,18 +173,17 @@ function makeGroundTexture() {
   const rnd = mulberry32(1337);
 
   const base = g.createLinearGradient(0, 0, 0, c.height);
-  base.addColorStop(0, "#4f7a3a");
-  base.addColorStop(0.5, "#456d33");
-  base.addColorStop(1, "#3a5c2b");
+  base.addColorStop(0, "#5a8a41");
+  base.addColorStop(0.5, "#4d7a36");
+  base.addColorStop(1, "#3f662c");
   g.fillStyle = base;
   g.fillRect(0, 0, c.width, c.height);
 
-  // Mottled grass patches
   for (let i = 0; i < 260; i++) {
     const x = rnd() * c.width, y = rnd() * c.height;
     const r = 30 + rnd() * 110;
     const shade = rnd();
-    const col = shade < 0.4 ? "63,102,45" : shade < 0.75 ? "84,124,58" : "52,84,40";
+    const col = shade < 0.4 ? "63,102,45" : shade < 0.75 ? "96,140,64" : "52,84,40";
     const grad = g.createRadialGradient(x, y, 0, x, y, r);
     grad.addColorStop(0, `rgba(${col},${0.18 + rnd() * 0.16})`);
     grad.addColorStop(1, `rgba(${col},0)`);
@@ -175,20 +191,18 @@ function makeGroundTexture() {
     g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
   }
 
-  // Dirt clearings
   for (let i = 0; i < 7; i++) {
     const x = rnd() * c.width, y = rnd() * c.height, r = 40 + rnd() * 70;
     const grad = g.createRadialGradient(x, y, 0, x, y, r);
-    grad.addColorStop(0, "rgba(96,72,44,0.55)");
-    grad.addColorStop(0.7, "rgba(96,72,44,0.25)");
-    grad.addColorStop(1, "rgba(96,72,44,0)");
+    grad.addColorStop(0, "rgba(112,84,52,0.6)");
+    grad.addColorStop(0.7, "rgba(112,84,52,0.28)");
+    grad.addColorStop(1, "rgba(112,84,52,0)");
     g.fillStyle = grad;
     g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
   }
 
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
-  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
   tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
   return tex;
 }
@@ -199,36 +213,33 @@ function makeDetailTexture() {
   const g = c.getContext("2d");
   const rnd = mulberry32(4242);
 
-  // Rocks
-  for (let i = 0; i < 40; i++) {
-    const x = rnd() * c.width, y = rnd() * c.height, r = 3 + rnd() * 6;
+  for (let i = 0; i < 46; i++) {
+    const x = rnd() * c.width, y = rnd() * c.height, r = 4 + rnd() * 7;
     g.fillStyle = "rgba(0,0,0,0.22)";
     g.beginPath(); g.ellipse(x + 1.5, y + 2, r, r * 0.6, 0, 0, Math.PI * 2); g.fill();
-    g.fillStyle = "#8a8f86";
+    g.fillStyle = "#9aa096";
     g.beginPath(); g.ellipse(x, y, r, r * 0.7, rnd(), 0, Math.PI * 2); g.fill();
-    g.fillStyle = "rgba(255,255,255,0.25)";
+    g.fillStyle = "rgba(255,255,255,0.3)";
     g.beginPath(); g.ellipse(x - r * 0.3, y - r * 0.3, r * 0.4, r * 0.25, 0, 0, Math.PI * 2); g.fill();
   }
 
-  // Grass tufts
-  for (let i = 0; i < 1400; i++) {
+  for (let i = 0; i < 1600; i++) {
     const x = rnd() * c.width, y = rnd() * c.height;
-    const h = 4 + rnd() * 7;
+    const h = 5 + rnd() * 8;
     const lean = (rnd() - 0.5) * 4;
-    g.strokeStyle = rnd() < 0.5 ? "rgba(120,170,80,0.5)" : "rgba(70,110,50,0.55)";
-    g.lineWidth = 1;
+    g.strokeStyle = rnd() < 0.5 ? "rgba(130,180,86,0.55)" : "rgba(74,116,52,0.6)";
+    g.lineWidth = 1.2;
     g.beginPath();
     g.moveTo(x, y);
     g.quadraticCurveTo(x + lean * 0.5, y - h * 0.6, x + lean, y - h);
     g.stroke();
   }
 
-  // Wildflowers
-  for (let i = 0; i < 120; i++) {
+  for (let i = 0; i < 130; i++) {
     const x = rnd() * c.width, y = rnd() * c.height;
     const col = ["#e8d15a", "#e88fb0", "#dfe6ea", "#c98fe8"][(rnd() * 4) | 0];
     g.fillStyle = col;
-    g.beginPath(); g.arc(x, y, 1.6, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.arc(x, y, 1.7, 0, Math.PI * 2); g.fill();
   }
 
   const tex = new THREE.CanvasTexture(c);
@@ -242,62 +253,104 @@ const treeGroup = new THREE.Group();
 scene.add(treeGroup);
 const treeMeshes = new Map(); // id -> THREE.Group
 
-const trunkGeo = new THREE.CylinderGeometry(0.62, 0.95, 1, 7);
-const trunkMat = new THREE.MeshStandardMaterial({ color: 0x6b4526, roughness: 0.95, flatShading: true });
-const pineGeo = new THREE.ConeGeometry(1, 1, 8);
-const blobGeo = new THREE.IcosahedronGeometry(1, 0);
+const barkMat = new THREE.MeshStandardMaterial({ color: 0x6b4526, roughness: 0.95 });
+const barkMatDark = new THREE.MeshStandardMaterial({ color: 0x50331b, roughness: 1 });
+
+const TRUNK_SEGMENTS = 8;
+function makeTrunkGeometry(rBottom, rTop, height) {
+  const geo = new THREE.CylinderGeometry(rTop, rBottom, height, TRUNK_SEGMENTS, 3);
+  const pos = geo.attributes.position;
+  // Nudge ring vertices outward per-angle so the trunk looks organic rather
+  // than like a smooth cylinder.
+  for (let i = 0; i < pos.count; i++) {
+    const y = pos.getY(i);
+    const x = pos.getX(i), z = pos.getZ(i);
+    const ang = Math.atan2(z, x);
+    const wobble = 1 + Math.sin(ang * 3 + y * 0.4) * 0.08;
+    pos.setX(i, x * wobble);
+    pos.setZ(i, z * wobble);
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
+function makePineCanopy(rnd) {
+  const group = new THREE.Group();
+  const tiers = 4;
+  let y = 0;
+  for (let i = 0; i < tiers; i++) {
+    const t = i / (tiers - 1);
+    const r = (8.5 - t * 5.5) * (0.9 + rnd() * 0.2);
+    const h = 9 - t * 3;
+    const geo = new THREE.ConeGeometry(r, h, 9, 1);
+    const mat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color().setHSL(0.31 + rnd() * 0.03, 0.5, 0.17 + t * 0.06),
+      roughness: 1,
+      flatShading: true,
+    });
+    const cone = new THREE.Mesh(geo, mat);
+    cone.position.y = y + h * 0.4;
+    cone.castShadow = true;
+    cone.receiveShadow = true;
+    group.add(cone);
+    y += h * 0.52;
+  }
+  return group;
+}
+
+const blobGeo = new THREE.IcosahedronGeometry(1, 1);
+function makeBroadleafCanopy(rnd) {
+  const group = new THREE.Group();
+  const clusters = 7;
+  for (let i = 0; i < clusters; i++) {
+    const r = 4 + rnd() * 3.2;
+    const mat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color().setHSL(0.24 + rnd() * 0.06, 0.48 + rnd() * 0.16, 0.26 + rnd() * 0.12),
+      roughness: 1,
+      flatShading: true,
+    });
+    const blob = new THREE.Mesh(blobGeo, mat);
+    blob.scale.set(r * (0.9 + rnd() * 0.4), r * (0.7 + rnd() * 0.4), r * (0.9 + rnd() * 0.4));
+    const a = rnd() * Math.PI * 2;
+    const rad = rnd() * 6.5;
+    blob.position.set(Math.cos(a) * rad, 2 + rnd() * 8, Math.sin(a) * rad);
+    blob.rotation.set(rnd() * Math.PI, rnd() * Math.PI, rnd() * Math.PI);
+    blob.castShadow = true;
+    blob.receiveShadow = true;
+    group.add(blob);
+  }
+  return group;
+}
 
 function makeTree(id) {
   const rnd = mulberry32(hashStr(id));
   const pine = rnd() < 0.45;
   const group = new THREE.Group();
-  const trunkH = pine ? 9 + rnd() * 4 : 7 + rnd() * 4;
-  const trunkR = 0.9 + rnd() * 0.5;
 
-  const trunk = new THREE.Mesh(trunkGeo, trunkMat);
-  trunk.scale.set(trunkR, trunkH, trunkR);
-  trunk.position.y = trunkH / 2;
+  const height = pine ? 26 + rnd() * 8 : 18 + rnd() * 6;
+  const rBottom = 1.1 + rnd() * 0.5;
+  const rTop = rBottom * 0.55;
+
+  const trunk = new THREE.Mesh(makeTrunkGeometry(rBottom, rTop, height), barkMat);
+  trunk.position.y = height / 2;
   trunk.castShadow = true;
   trunk.receiveShadow = true;
   group.add(trunk);
 
-  if (pine) {
-    const tiers = 3;
-    for (let i = 0; i < tiers; i++) {
-      const r = (7.5 - i * 1.8) * (0.85 + rnd() * 0.25);
-      const h = 8 + rnd() * 2.5;
-      const mat = new THREE.MeshStandardMaterial({
-        color: new THREE.Color().setHSL(0.30 + rnd() * 0.03, 0.45 + rnd() * 0.12, 0.20 + rnd() * 0.07),
-        roughness: 1,
-        flatShading: true,
-      });
-      const cone = new THREE.Mesh(pineGeo, mat);
-      cone.scale.set(r, h, r);
-      cone.position.y = trunkH * 0.7 + i * (h * 0.55);
-      cone.castShadow = true;
-      group.add(cone);
-    }
-  } else {
-    const n = 5;
-    const canopyBase = trunkH + 4;
-    for (let i = 0; i < n; i++) {
-      const r = 4 + rnd() * 3;
-      const mat = new THREE.MeshStandardMaterial({
-        color: new THREE.Color().setHSL(0.24 + rnd() * 0.05, 0.42 + rnd() * 0.16, 0.26 + rnd() * 0.1),
-        roughness: 1,
-        flatShading: true,
-      });
-      const blob = new THREE.Mesh(blobGeo, mat);
-      blob.scale.setScalar(r);
-      blob.position.set(
-        (rnd() - 0.5) * 8,
-        canopyBase + (rnd() - 0.5) * 5,
-        (rnd() - 0.5) * 8
-      );
-      blob.castShadow = true;
-      group.add(blob);
-    }
+  // A couple of roots flaring at the base to seat the tree in the ground.
+  const rootCount = 3 + ((rnd() * 3) | 0);
+  for (let i = 0; i < rootCount; i++) {
+    const a = (i / rootCount) * Math.PI * 2 + rnd();
+    const root = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.9, 5, 5), barkMatDark);
+    root.position.set(Math.cos(a) * rBottom * 0.9, 1.2, Math.sin(a) * rBottom * 0.9);
+    root.rotation.set(Math.PI / 2.6, a, 0);
+    root.castShadow = true;
+    group.add(root);
   }
+
+  const canopy = pine ? makePineCanopy(rnd) : makeBroadleafCanopy(rnd);
+  canopy.position.y = pine ? height * 0.55 : height * 0.72;
+  group.add(canopy);
 
   group.rotation.y = rnd() * Math.PI * 2;
   return group;
@@ -330,7 +383,7 @@ function syncTrees(state, time) {
 function disposeGroup(group) {
   group.traverse((o) => {
     if (o.isMesh) {
-      if (o.geometry !== trunkGeo && o.geometry !== pineGeo && o.geometry !== blobGeo) o.geometry.dispose();
+      o.geometry.dispose();
       if (Array.isArray(o.material)) o.material.forEach((m) => m.dispose());
       else if (o.material) o.material.dispose();
     }
@@ -340,17 +393,15 @@ function disposeGroup(group) {
 // -------------------------------------------------------------- player meshes
 const playerGroup = new THREE.Group();
 scene.add(playerGroup);
-const players = new Map(); // id -> { group, torso, legL, legR, armL, armR, woodLabel, phase, facing, px, py, moving }
+const players = new Map(); // id -> rig
 
-const ME_COLORS = { shirt: 0x4a90d9, shirtDark: 0x2f6699, hair: 0x3a2a1a };
-const OTHER_COLORS = { shirt: 0xd9704a, shirtDark: 0xa04d2e, hair: 0x241a12 };
+const ME_COLORS = { shirt: 0x4a90d9, shirtDark: 0x2f6699, pants: 0x33414f, hair: 0x3a2a1a };
+const OTHER_COLORS = { shirt: 0xd9704a, shirtDark: 0xa04d2e, pants: 0x3f4a55, hair: 0x241a12 };
 
-const legGeo = new THREE.CylinderGeometry(1, 1, 1, 6);
-const armGeo = new THREE.CylinderGeometry(1, 1, 1, 6);
-const torsoGeo = new THREE.CylinderGeometry(5.2, 4.4, 10, 10);
-const headGeo = new THREE.SphereGeometry(3.6, 14, 12);
-const noseGeo = new THREE.ConeGeometry(0.9, 2.2, 8);
-const hairGeo = new THREE.SphereGeometry(3.9, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.62);
+const headGeo = new THREE.SphereGeometry(3.4, 18, 14);
+const hairGeo = new THREE.SphereGeometry(3.7, 18, 14, 0, Math.PI * 2, 0, Math.PI * 0.6);
+const noseGeo = new THREE.ConeGeometry(0.85, 2.1, 8);
+const limbGeo = new THREE.CapsuleGeometry(1, 1, 4, 8);
 
 function makeWoodLabel() {
   const c = document.createElement("canvas");
@@ -359,7 +410,6 @@ function makeWoodLabel() {
   tex.colorSpace = THREE.SRGBColorSpace;
   const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false }));
   sprite.scale.set(20, 5, 1);
-  sprite.position.y = 25;
   sprite.renderOrder = 999;
   return { sprite, canvas: c, tex, value: null };
 }
@@ -386,72 +436,73 @@ function makePlayer(isMe) {
   const c = isMe ? ME_COLORS : OTHER_COLORS;
   const group = new THREE.Group();
   const skinMat = new THREE.MeshStandardMaterial({ color: 0xe8b98a, roughness: 0.85 });
-  const legMat = new THREE.MeshStandardMaterial({ color: 0x33414f, roughness: 0.9 });
+  const pantsMat = new THREE.MeshStandardMaterial({ color: c.pants, roughness: 0.9 });
   const torsoMat = new THREE.MeshStandardMaterial({ color: c.shirt, roughness: 0.8 });
   const armMat = new THREE.MeshStandardMaterial({ color: c.shirtDark, roughness: 0.85 });
   const hairMat = new THREE.MeshStandardMaterial({ color: c.hair, roughness: 1 });
 
-  const torso = new THREE.Mesh(torsoGeo, torsoMat);
-  torso.position.y = 12.5;
+  // Torso as a tapered capsule for a soft, rounded body.
+  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(4.4, 4, 6, 12), torsoMat);
+  torso.position.y = 12.4;
   torso.castShadow = true;
   group.add(torso);
 
   const head = new THREE.Mesh(headGeo, skinMat);
-  head.position.y = 20;
+  head.position.y = 19.6;
   head.castShadow = true;
   group.add(head);
 
   const hair = new THREE.Mesh(hairGeo, hairMat);
-  hair.position.set(0, 20.6, -0.4);
+  hair.position.set(0, 20.2, -0.3);
   hair.rotation.x = -Math.PI / 2;
   group.add(hair);
 
   const nose = new THREE.Mesh(noseGeo, skinMat);
   nose.rotation.x = Math.PI / 2;
-  nose.position.set(0, 19.8, 3.4);
+  nose.position.set(0, 19.4, 3.1);
   group.add(nose);
 
-  function limb(x, y, z, w, len, mat) {
+  function limb(x, y, z, r, len, mat) {
     const pivot = new THREE.Group();
     pivot.position.set(x, y, z);
-    const m = new THREE.Mesh(armGeo, mat);
-    m.scale.set(w, len, w);
+    const m = new THREE.Mesh(limbGeo, mat);
+    m.scale.set(r, len, r);
     m.position.y = -len / 2;
     m.castShadow = true;
     pivot.add(m);
     group.add(pivot);
     return pivot;
   }
-  const legL = limb(-2.4, 8, 0, 1.7, 8, legMat);
-  const legR = limb(2.4, 8, 0, 1.7, 8, legMat);
-  const armL = limb(-5.6, 17, 0, 1.5, 7.5, armMat);
-  const armR = limb(5.6, 17, 0, 1.5, 7.5, armMat);
+  const legL = limb(-2.2, 7.5, 0, 1.6, 6.5, pantsMat);
+  const legR = limb(2.2, 7.5, 0, 1.6, 6.5, pantsMat);
+  const armL = limb(-4.8, 16.5, 0, 1.35, 6.5, armMat);
+  const armR = limb(4.8, 16.5, 0, 1.35, 6.5, armMat);
 
   const woodLabel = makeWoodLabel();
   group.add(woodLabel.sprite);
 
-  return { group, torso, legL, legR, armL, armR, woodLabel, phase: 0, facing: 0, px: null, py: null, moving: false, isMe };
+  return { group, legL, legR, armL, armR, woodLabel, phase: 0, facing: 0, px: null, py: null, moving: false, isMe };
 }
 
 // ------------------------------------------------------------ fx particles
 const particles = [];
 const particleGeo = new THREE.BoxGeometry(1, 1, 1);
+const floaters = [];
 const floaterGroup = new THREE.Group();
 scene.add(floaterGroup);
 
 function spawnHarvestFx(x, y) {
-  for (let i = 0; i < 18; i++) {
+  for (let i = 0; i < 20; i++) {
     const a = Math.random() * Math.PI * 2;
     const sp = 30 + Math.random() * 90;
     const leaf = Math.random() < 0.6;
     const color = leaf
       ? new THREE.Color().setHSL(0.25 + Math.random() * 0.11, 0.6, 0.3 + Math.random() * 0.2)
       : new THREE.Color(0x7a5230);
-    const mat = new THREE.MeshBasicMaterial({ color });
+    const mat = new THREE.MeshBasicMaterial({ color, transparent: true });
     const mesh = new THREE.Mesh(particleGeo, mat);
-    const size = 2 + Math.random() * 3;
-    mesh.scale.setScalar(size);
-    mesh.position.set(x, 12, y);
+    mesh.scale.setScalar(2 + Math.random() * 3);
+    mesh.position.set(x, 14, y);
     scene.add(mesh);
     particles.push({
       mesh, mat,
@@ -483,7 +534,6 @@ function spawnHarvestFx(x, y) {
   floaters.push({ sprite, mat, tex, life: 1.1, max: 1.1 });
 }
 
-const floaters = [];
 function updateFx(dt) {
   for (let i = particles.length - 1; i >= 0; i--) {
     const p = particles[i];
@@ -502,7 +552,6 @@ function updateFx(dt) {
     p.vx *= 0.98;
     p.mesh.rotation.x = p.rot += p.vr * dt;
     p.mat.opacity = clamp(p.life / p.max, 0, 1);
-    p.mat.transparent = true;
   }
   for (let i = floaters.length - 1; i >= 0; i--) {
     const f = floaters[i];
@@ -531,6 +580,7 @@ let room = null;
 let myId = null;
 let connected = false;
 
+const raycaster = new THREE.Raycaster();
 canvas.addEventListener("click", (e) => {
   if (!room || !room.state) return;
   const ndc = new THREE.Vector2(
@@ -550,8 +600,6 @@ canvas.addEventListener("click", (e) => {
     room.send("harvest", { treeId });
   }
 });
-
-const raycaster = new THREE.Raycaster();
 
 // ------------------------------------------------------------------ network
 const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -580,19 +628,13 @@ const startTime = performance.now();
 const DAY_LENGTH = 180000; // 3 minutes
 const clock = new THREE.Clock();
 
-// A day/night tint blended over the whole scene each frame.
-const skyTint = new THREE.Mesh(
-  new THREE.PlaneGeometry(6000, 6000),
-  new THREE.MeshBasicMaterial({ color: 0x0c1834, transparent: true, opacity: 0, depthWrite: false })
-);
-skyTint.rotation.x = -Math.PI / 2;
-skyTint.position.y = 60;
-skyTint.renderOrder = 500;
-scene.add(skyTint);
-
 const sunDay = new THREE.Color(0xfff2cf);
 const sunDusk = new THREE.Color(0xffa860);
-const sunNight = new THREE.Color(0x5a6ea8);
+const sunNight = new THREE.Color(0x6a7ec0);
+const skyDay = new THREE.Color(0x87b6d8);
+const skyDusk = new THREE.Color(0xd98a52);
+const skyNight = new THREE.Color(0x0a1230);
+const tmpColor = new THREE.Color();
 
 function animate() {
   requestAnimationFrame(animate);
@@ -618,40 +660,35 @@ function animate() {
     walkPhase += dt * 11;
   }
 
-  // ---- day / night lighting ----
+  // ---- day / night ----
   const s = Math.sin(tOfDay * Math.PI * 2 - Math.PI / 2); // -1 midnight, +1 noon
   const dayAmt = clamp((s + 0.15) / 0.9, 0, 1);
-  const night = 1 - dayAmt;
   const warmth = 1 - Math.abs(s);
 
-  sun.intensity = 0.25 + dayAmt * 2.6;
+  sun.intensity = 0.3 + dayAmt * 2.4;
   sun.color.copy(sunNight).lerp(sunDay, dayAmt);
   if (warmth > 0.1) sun.color.lerp(sunDusk, warmth * 0.5);
-  hemi.intensity = 0.25 + dayAmt * 0.85;
+  hemi.intensity = 0.3 + dayAmt * 0.75;
 
-  scene.background.setRGB(
-    0.04 + dayAmt * 0.24,
-    0.10 + dayAmt * 0.34,
-    0.06 + dayAmt * 0.22
+  tmpColor.copy(skyNight).lerp(skyDay, dayAmt);
+  if (warmth > 0.1) tmpColor.lerp(skyDusk, warmth * 0.45);
+  scene.background.copy(tmpColor);
+  scene.fog.color.copy(tmpColor);
+
+  // ---- camera: elevated tilted top-down rig ----
+  const camTarget = new THREE.Vector3(local.x, 6, local.y);
+  const camPos = new THREE.Vector3(
+    local.x,
+    CAM_HEIGHT,
+    local.y + CAM_DIST
   );
-  scene.fog.color.copy(scene.background);
-
-  // Tint overlay for night / dawn dusk
-  skyTint.material.opacity = night * 0.5;
-  skyTint.material.color.setRGB(0.05, 0.09, 0.20);
-
-  // ---- camera follows player, looking straight down ----
-  const camTarget = new THREE.Vector3(local.x, 0, local.y);
-  const camPos = new THREE.Vector3(local.x, 760, local.y + 0.001);
-  camera.position.lerp(camPos, 1 - Math.pow(0.001, dt));
+  camera.position.lerp(camPos, 1 - Math.pow(0.0015, dt));
   camera.lookAt(camTarget);
 
   // Sun + shadow frustum follow the player
-  sun.position.set(local.x + 220, 480, local.y + 160);
+  sun.position.set(local.x + 260, 520, local.y + 180);
   sun.target.position.set(local.x, 0, local.y);
   sun.target.updateMatrixWorld();
-  skyTint.position.x = local.x;
-  skyTint.position.z = local.y;
 
   // ---- world ----
   if (room && room.state) {
