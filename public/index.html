@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Survival Prototype</title>
+<style>
+  body { margin: 0; background: #1a1a1a; color: #eee; font-family: sans-serif; }
+  #hud { position: fixed; top: 10px; left: 10px; font-size: 16px; z-index: 10; }
+  canvas { display: block; margin: 0 auto; background: #2a3a2a; max-width: 100%; }
+</style>
+</head>
+<body>
+<div id="hud">Connecting...</div>
+<canvas id="game" width="1000" height="700"></canvas>
+
+<script src="https://unpkg.com/colyseus.js@0.15.26/dist/colyseus.js"></script>
+<script>
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const hud = document.getElementById("hud");
+
+// Build WS URL from the page's own origin — works on localhost AND Render
+const proto = location.protocol === "https:" ? "wss" : "ws";
+const endpoint = `${proto}://${location.host}`;
+
+const client = new Colyseus.Client(endpoint);
+let room;
+let myId = null;
+
+const keys = {};
+addEventListener("keydown", e => keys[e.key.toLowerCase()] = true);
+addEventListener("keyup", e => keys[e.key.toLowerCase()] = false);
+
+let local = { x: 500, y: 350 };
+
+canvas.addEventListener("click", e => {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const mx = (e.clientX - rect.left) * scaleX;
+  const my = (e.clientY - rect.top) * scaleY;
+
+  if (!room || !room.state) return;
+
+  let closest = null, closestDist = Infinity;
+  room.state.trees.forEach((tree, id) => {
+    const d = Math.hypot(tree.x - mx, tree.y - my);
+    if (d < closestDist) { closestDist = d; closest = id; }
+  });
+  if (closest && closestDist < 40) {
+    room.send("harvest", { treeId: closest });
+  }
+});
+
+async function connect() {
+  try {
+    room = await client.joinOrCreate("survival");
+    myId = room.sessionId;
+    console.log("Joined room", room.roomId, "as", myId);
+
+    room.onStateChange.once(state => {
+      const me = state.players.get(myId);
+      if (me) { local.x = me.x; local.y = me.y; }
+    });
+
+    setInterval(() => {
+      if (room) room.send("move", { x: local.x, y: local.y });
+    }, 50);
+
+    requestAnimationFrame(loop);
+  } catch (err) {
+    console.error(err);
+    hud.textContent = "Connection failed — check console";
+  }
+}
+
+function loop() {
+  const speed = 4;
+  let dx = 0, dy = 0;
+  if (keys["w"] || keys["arrowup"]) dy -= 1;
+  if (keys["s"] || keys["arrowdown"]) dy += 1;
+  if (keys["a"] || keys["arrowleft"]) dx -= 1;
+  if (keys["d"] || keys["arrowright"]) dx += 1;
+  if (dx && dy) { dx *= 0.707; dy *= 0.707; }
+  local.x = Math.max(20, Math.min(980, local.x + dx * speed));
+  local.y = Math.max(20, Math.min(680, local.y + dy * speed));
+
+  ctx.fillStyle = "#2a3a2a";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  if (room && room.state) {
+    room.state.trees.forEach(tree => {
+      ctx.fillStyle = "#5a3a1a";
+      ctx.fillRect(tree.x - 3, tree.y, 6, 14);
+      ctx.beginPath();
+      ctx.arc(tree.x, tree.y - 6, 16, 0, Math.PI * 2);
+      ctx.fillStyle = "#2e7a2e";
+      ctx.fill();
+    });
+
+    room.state.players.forEach((player, id) => {
+      const isMe = id === myId;
+      const px = isMe ? local.x : player.x;
+      const py = isMe ? local.y : player.y;
+
+      ctx.beginPath();
+      ctx.arc(px, py, 14, 0, Math.PI * 2);
+      ctx.fillStyle = isMe ? "#4aa3ff" : "#ff7a4a";
+      ctx.fill();
+      ctx.strokeStyle = "#000";
+      ctx.stroke();
+
+      ctx.fillStyle = "#fff";
+      ctx.font = "12px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(`🪵 ${player.wood}`, px, py - 22);
+    });
+
+    const me = room.state.players.get(myId);
+    hud.textContent = me
+      ? `You: 🪵 ${me.wood} | Players: ${room.state.players.size} | Trees: ${room.state.trees.size}`
+      : "Loading...";
+  }
+
+  requestAnimationFrame(loop);
+}
+
+connect();
+</script>
+</body>
+</html>
