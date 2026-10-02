@@ -1,4 +1,6 @@
-import { Server, Room } from "colyseus";
+import colyseus from "colyseus";
+const { Server, Room } = colyseus;
+
 import { Schema, MapSchema, type } from "@colyseus/schema";
 import express from "express";
 import http from "http";
